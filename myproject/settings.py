@@ -26,7 +26,19 @@ SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-l!-61i)7rkq1a8*2%=2w4
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'True').lower() == 'true'
 
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',') if os.environ.get('ALLOWED_HOSTS') else ['localhost', '127.0.0.1']
+configured_hosts = os.environ.get('ALLOWED_HOSTS', '')
+vercel_hosts = ','.join(
+    value for value in (
+        os.environ.get('VERCEL_URL'),
+        os.environ.get('VERCEL_BRANCH_URL'),
+        os.environ.get('VERCEL_PROJECT_PRODUCTION_URL'),
+    ) if value
+)
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in ','.join((configured_hosts, vercel_hosts)).split(',')
+    if host.strip()
+] or ['localhost', '127.0.0.1']
 
 
 # Application definition
@@ -181,6 +193,11 @@ CSRF_COOKIE_HTTPONLY = True
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Strict'
 CSRF_COOKIE_SAMESITE = 'Strict'
+CSRF_TRUSTED_ORIGINS = [
+    f'https://{host}'
+    for host in ALLOWED_HOSTS
+    if host not in {'localhost', '127.0.0.1'}
+]
 
 # Authentication URLs
 LOGIN_URL = '/login/'
