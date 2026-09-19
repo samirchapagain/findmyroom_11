@@ -1,4 +1,5 @@
 import logging
+from django.http import Http404
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.conf import settings
@@ -14,6 +15,9 @@ class ErrorHandlingMiddleware:
         return response
 
     def process_exception(self, request, exception):
+        if isinstance(exception, Http404):
+            return None
+
         logger.error(f"Unhandled exception: {exception}", exc_info=True)
         
         if request.path.startswith('/api/'):

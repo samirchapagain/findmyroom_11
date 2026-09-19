@@ -1,0 +1,15 @@
+{% extends 'started/base.html' %}
+
+{% block title %}Error | LuxeRooms{% endblock %}
+
+{% block content %}
+<main class="auth-container">
+    <section class="auth-card">
+        <div class="auth-header">
+            <h2>Something went wrong</h2>
+            <p>{{ error|default:"Please try again later." }}</p>
+            <a class="btn-primary" href="/">Return home</a>
+        </div>
+    </section>
+</main>
+{% endblock %}

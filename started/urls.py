@@ -30,4 +30,7 @@ urlpatterns = [
     path('api/owner-messages/', views.get_owner_messages, name='get_owner_messages'),
     path('api/client-messages/', views.get_client_messages, name='get_client_messages'),
     path('api/test-send/', views.test_send_message, name='test_send_message'),
+    path('api/book-room/', views.book_room, name='book_room'),
+    path('api/booking-status/<int:room_id>/', views.booking_status, name='booking_status'),
+    path('api/bookings/<int:booking_id>/', views.update_booking, name='update_booking'),
 ]

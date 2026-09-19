@@ -121,6 +121,28 @@
             </div>
             
             <h2 id="listingsSection">My Current Listings</h2>
+
+            <h2 id="bookingRequestsSection">Booking Requests</h2>
+            <div id="bookingRequests" style="margin-bottom: 2rem;">
+                {% if booking_requests %}
+                    {% for booking in booking_requests %}
+                    <div id="booking-{{ booking.id }}" style="display: flex; align-items: center; gap: 1rem; padding: 1rem; margin-bottom: .75rem; border: 1px solid #ddd; border-radius: 10px;">
+                        <div style="flex: 1;">
+                            <strong>{{ booking.client.user.get_full_name|default:booking.client.user.username }}</strong>
+                            requested <strong>{{ booking.room.title }}</strong>
+                            <div style="color: #666; font-size: .9rem;">{{ booking.created_at|date:"M j, Y g:i A" }}</div>
+                            <span class="booking-status" style="font-weight: 600;">{{ booking.get_status_display }}</span>
+                        </div>
+                        {% if booking.status == 'pending' %}
+                        <button type="button" onclick="updateBooking({{ booking.id }}, 'confirmed')" style="background: #16a34a; color: white; border: 0; border-radius: 6px; padding: .5rem .75rem;">Accept</button>
+                        <button type="button" onclick="updateBooking({{ booking.id }}, 'cancelled')" style="background: #dc2626; color: white; border: 0; border-radius: 6px; padding: .5rem .75rem;">Reject</button>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <p style="color: #666;">No booking requests yet.</p>
+                {% endif %}
+            </div>
             
             <div class="rooms-grid">
                 {% for room in owner_rooms %}
@@ -322,6 +344,33 @@ async function loadOwnerMessages() {
             });
         } else {
             messagesList.innerHTML = '<p style="text-align: center; color: #666; margin-top: 50px;">No messages yet</p>';
+        }
+
+        async function updateBooking(bookingId, action) {
+            try {
+                const response = await fetch(`/api/bookings/${bookingId}/`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': getCsrfToken()
+                    },
+                    body: JSON.stringify({ action })
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    alert(data.error || 'Unable to update booking request.');
+                    return;
+                }
+                const card = document.getElementById(`booking-${bookingId}`);
+                if (card) {
+                    card.querySelector('.booking-status').textContent =
+                        data.status === 'confirmed' ? 'Confirmed' : 'Cancelled';
+                    card.querySelectorAll('button').forEach(button => button.remove());
+                }
+            } catch (error) {
+                console.error('Booking update error:', error);
+                alert('Unable to update booking request.');
+            }
         }
     } catch (error) {
         console.error('Error loading messages:', error);

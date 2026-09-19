@@ -13,8 +13,8 @@
             
             <div class="current-profile">
                 <div class="current-avatar">
-                    {% if profile.profile_image %}
-                        <img src="{{ profile.profile_image.url }}" alt="{{ user.username }}">
+                    {% if profile.get_profile_image %}
+                        <img src="{{ profile.get_profile_image }}" alt="{{ user.username }}">
                     {% else %}
                         <i class="fas fa-user"></i>
                     {% endif %}

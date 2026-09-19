@@ -188,7 +188,7 @@ async function verifyPaymentCode() {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                'X-CSRFToken': getCsrfToken()
             },
             body: JSON.stringify({
                 room_id: currentVerificationRoomId,

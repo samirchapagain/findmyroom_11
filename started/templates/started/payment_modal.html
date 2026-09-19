@@ -1,5 +1,5 @@
 <!-- CSRF Token -->
-<input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">
+{% csrf_token %}
 
 <!-- Payment Modal -->
 <div id="paymentModal" class="payment-modal" style="display: none;">
@@ -159,7 +159,7 @@ async function openPaymentModal(roomId) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                'X-CSRFToken': getCsrfToken()
             },
             body: JSON.stringify({ room_id: roomId })
         });
@@ -317,7 +317,7 @@ async function verifyKhaltiPayment(token, amount) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                'X-CSRFToken': getCsrfToken()
             },
             body: JSON.stringify({
                 token: token,
@@ -350,19 +350,27 @@ document.addEventListener('DOMContentLoaded', function() {
     // Add free unlock button event listener
     const freeUnlockBtn = document.getElementById('free-unlock-btn');
     if (freeUnlockBtn) {
-        freeUnlockBtn.addEventListener('click', function() {
-            // Simulate successful unlock without payment
+        freeUnlockBtn.addEventListener('click', async function() {
+            if (!currentRoomId) return;
+
+            const response = await fetch('/unlock/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCsrfToken()
+                },
+                body: JSON.stringify({ room_id: currentRoomId, free: true })
+            });
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+                showSuccessMessage(data.error || 'Free unlock is only available locally.');
+                return;
+            }
+
             closePaymentModal();
-            
-            // Show success message
-            showSuccessMessage('Room unlocked for free! Chat access granted.');
-            
-            // Open chat interface directly
-            setTimeout(() => {
-                if (currentRoomId) {
-                    openChatInterface(currentRoomId, 'Room Owner');
-                }
-            }, 1000);
+            showSuccessMessage(data.message);
+            openChatInterface(currentRoomId, data.contact_details.owner_name);
         });
     }
     

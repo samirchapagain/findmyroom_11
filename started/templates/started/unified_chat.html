@@ -167,7 +167,15 @@ function closeChatInterface() {
 
 function initializeChatSocket(roomId) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    chatSocket = new WebSocket(`${protocol}//${window.location.host}/ws/chat/${roomId}/`);
+    try {
+        chatSocket = new WebSocket(`${protocol}//${window.location.host}/ws/chat/${roomId}/`);
+    } catch (error) {
+        // Serverless deployments may not expose WebSockets; HTTP remains the
+        // supported transport and does not prevent opening the conversation.
+        chatSocket = null;
+        console.warn('WebSocket unavailable; using HTTP chat fallback.', error);
+        return;
+    }
     
     chatSocket.onmessage = function(e) {
         const data = JSON.parse(e.data);
@@ -188,6 +196,10 @@ function initializeChatSocket(roomId) {
     
     chatSocket.onerror = function(e) {
         console.error('Chat socket error:', e);
+        if (chatSocket) {
+            chatSocket.close();
+            chatSocket = null;
+        }
     };
 }
 
@@ -257,11 +269,16 @@ function sendChatMessage() {
     
     // Send via WebSocket if available
     if (chatSocket && chatSocket.readyState === WebSocket.OPEN) {
-        chatSocket.send(JSON.stringify({
-            'type': 'chat_message',
-            'message': message,
-            'temp_id': tempMessage.temp_id
-        }));
+        try {
+            chatSocket.send(JSON.stringify({
+                'type': 'chat_message',
+                'message': message,
+                'temp_id': tempMessage.temp_id
+            }));
+        } catch (error) {
+            chatSocket = null;
+            sendMessageViaAPI(message, tempMessage.temp_id);
+        }
     } else {
         // Fallback to HTTP API
         sendMessageViaAPI(message, tempMessage.temp_id);
@@ -274,7 +291,7 @@ async function sendMessageViaAPI(message, tempId) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                'X-CSRFToken': getCsrfToken()
             },
             body: JSON.stringify({
                 room_id: currentChatRoomId,
@@ -351,7 +368,7 @@ async function markOwnerMessagesAsRead(roomId) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                'X-CSRFToken': getCsrfToken()
             },
             body: JSON.stringify({
                 room_id: roomId
@@ -395,7 +412,7 @@ async function createBooking() {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                'X-CSRFToken': getCsrfToken()
             },
             body: JSON.stringify({
                 room_id: currentChatRoomId
@@ -423,7 +440,7 @@ async function cancelBooking() {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                'X-CSRFToken': getCsrfToken()
             },
             body: JSON.stringify({
                 room_id: currentChatRoomId
@@ -536,7 +553,10 @@ function closeLocationMap() {
 } 
 
 function initClientLocationMap() {
-    if (!currentRoomLocation) return;
+    if (!currentRoomLocation || typeof L === 'undefined') {
+        alert('The property map is unavailable right now.');
+        return;
+    }
     
     const birtamodeBounds = [
         [26.6200, 87.9700], // Southwest
@@ -566,11 +586,6 @@ function initClientLocationMap() {
         try { clientLocationMapInstance.invalidateSize(); } catch (e) {}
     }, 200);
 }
-    
-    L.marker([currentRoomLocation.lat, currentRoomLocation.lng])
-        .addTo(map)
-        .bindPopup('Property Location')
-        .openPopup();
 
 
 // Show notification when page loads if user has active chat

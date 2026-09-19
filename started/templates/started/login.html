@@ -161,7 +161,7 @@ document.getElementById('forgotPasswordForm').addEventListener('submit', async f
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                'X-CSRFToken': getCsrfToken()
             },
             body: `email=${encodeURIComponent(email)}`
         });
@@ -202,7 +202,7 @@ async function resetPassword() {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                'X-CSRFToken': getCsrfToken()
             },
             body: `email=${encodeURIComponent(email)}&reset_pin=${pin}&new_password=${encodeURIComponent(password)}&confirm_password=${encodeURIComponent(password)}`
         });

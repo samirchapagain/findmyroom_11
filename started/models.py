@@ -145,6 +145,19 @@ class Room(models.Model):
     
     # Links to the property owner
     owner = models.ForeignKey('Owner', on_delete=models.CASCADE, null=True, blank=True)
+
+    latitude = models.DecimalField(
+        max_digits=17,
+        decimal_places=8,
+        null=True,
+        blank=True,
+    )
+    longitude = models.DecimalField(
+        max_digits=17,
+        decimal_places=8,
+        null=True,
+        blank=True,
+    )
     
     # Automatically set when room is created
     created_at = models.DateTimeField(auto_now_add=True)
@@ -155,6 +168,41 @@ class Room(models.Model):
     class Meta:
         # Show newest rooms first in admin and queries
         ordering = ['-created_at']
+
+
+class RoomImage(models.Model):
+    room = models.ForeignKey(
+        Room,
+        on_delete=models.CASCADE,
+        related_name='images',
+    )
+    image = models.ImageField(upload_to='room_images/')
+    is_primary = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-is_primary', 'created_at']
+
+
+class Booking(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('confirmed', 'Confirmed'),
+        ('cancelled', 'Cancelled'),
+    ]
+
+    client = models.ForeignKey('Client', on_delete=models.CASCADE)
+    owner = models.ForeignKey('Owner', on_delete=models.CASCADE)
+    room = models.ForeignKey(Room, on_delete=models.CASCADE)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [('client', 'room')]
+
+    def __str__(self):
+        return f'{self.client.user.username} - {self.room.title} - {self.status}'
+
 
 class Payment(models.Model):
     PAYMENT_STATUS_CHOICES = [

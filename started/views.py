@@ -1,6 +1,6 @@
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
-from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
 from django.contrib.auth.models import User
 from django.http import JsonResponse
 from django.db.models import Q
@@ -21,7 +21,7 @@ import random
 import string
 import logging
 
-from .models import Room, Payment, ChatAccess, Message, UserProfile, Owner, Client, RoomAccess, ClientPayment, Conversation
+from .models import Room, RoomImage, Booking, Payment, ChatAccess, Message, UserProfile, Owner, Client, RoomAccess, ClientPayment, Conversation
 from django.utils import timezone
 import requests
 import hashlib
@@ -31,6 +31,18 @@ from .security_utils import sanitize_input, safe_int
 
 logger = logging.getLogger(__name__)
 stripe.api_key = settings.STRIPE_SECRET_KEY if settings.STRIPE_SECRET_KEY else None
+
+
+def upload_images(room, images):
+    """Store at most five images, keeping the first image primary."""
+    images = list(images)
+    if len(images) > 5:
+        raise ValueError('You can upload a maximum of 5 images.')
+    # An edit with files is a replacement, rather than an unbounded append.
+    if images:
+        room.images.all().delete()
+    for index, image in enumerate(images):
+        RoomImage.objects.create(room=room, image=image, is_primary=index == 0)
 
 @login_required
 def client_dashboard(request):
@@ -105,19 +117,107 @@ def owner_dashboard(request):
     if request.method == 'POST':
         form = RoomForm(request.POST, request.FILES)
         if form.is_valid():
+            images = request.FILES.getlist('room_images')
+            if len(images) > 5:
+                form.add_error(None, 'You can upload a maximum of 5 images.')
+                return render(request, 'started/owner_dashboard.html', {'form': form, 'owner_rooms': Room.objects.filter(owner=owner)[:10]})
             room = form.save(commit=False)
             room.owner = owner
             room.save()
+            upload_images(room, images)
             messages.success(request, 'Room listing added successfully!')
             return redirect('owner_dashboard')
     else:
         form = RoomForm()
     
     owner_rooms = Room.objects.filter(owner=owner)[:10]
+    booking_requests = Booking.objects.filter(owner=owner).select_related(
+        'client__user', 'room'
+    )[:20]
     return render(request, 'started/owner_dashboard.html', {
         'form': form,
-        'owner_rooms': owner_rooms
+        'owner_rooms': owner_rooms,
+        'booking_requests': booking_requests,
     })
+
+
+@login_required
+@require_http_methods(['POST'])
+def book_room(request):
+    try:
+        client = request.user.client
+    except (Client.DoesNotExist, AttributeError):
+        return JsonResponse({'success': False, 'error': 'Client account required.'}, status=403)
+
+    try:
+        room_id = json.loads(request.body).get('room_id')
+        room = get_object_or_404(Room.objects.select_related('owner'), id=room_id)
+        if room.owner is None:
+            return JsonResponse({'success': False, 'error': 'This room has no owner.'}, status=400)
+
+        booking, created = Booking.objects.get_or_create(
+            client=client,
+            room=room,
+            defaults={'owner': room.owner, 'status': 'pending'},
+        )
+        if not created and booking.status == 'pending':
+            booking.status = 'cancelled'
+            booking.save(update_fields=['status'])
+            return JsonResponse({'success': True, 'status': 'cancelled'})
+        if not created and booking.status == 'confirmed':
+            return JsonResponse({'success': False, 'error': 'This booking is already confirmed.'}, status=400)
+
+        booking.owner = room.owner
+        booking.status = 'pending'
+        booking.save(update_fields=['owner', 'status'])
+        try:
+            send_mail(
+                f'New booking request for {room.title}',
+                f'{request.user.get_username()} requested to book {room.title}.',
+                settings.DEFAULT_FROM_EMAIL,
+                [room.owner.user.email],
+                fail_silently=False,
+            )
+        except Exception:
+            logger.exception('Unable to send booking request email for room %s', room.id)
+        return JsonResponse({'success': True, 'status': 'pending'})
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return JsonResponse({'success': False, 'error': 'Invalid booking request.'}, status=400)
+
+
+@login_required
+@require_http_methods(['GET'])
+def booking_status(request, room_id):
+    try:
+        booking = Booking.objects.get(room_id=room_id, client=request.user.client)
+    except (Booking.DoesNotExist, Client.DoesNotExist, AttributeError):
+        return JsonResponse({'has_booking': False, 'status': None})
+    return JsonResponse({'has_booking': True, 'status': booking.status})
+
+
+@login_required
+@require_http_methods(['POST'])
+def update_booking(request, booking_id):
+    try:
+        owner = request.user.owner
+    except (Owner.DoesNotExist, AttributeError):
+        return JsonResponse({'success': False, 'error': 'Owner account required.'}, status=403)
+
+    try:
+        action = json.loads(request.body).get('action')
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return JsonResponse({'success': False, 'error': 'Invalid request.'}, status=400)
+    if action not in {'confirmed', 'cancelled'}:
+        return JsonResponse({'success': False, 'error': 'Invalid booking action.'}, status=400)
+
+    booking = get_object_or_404(
+        Booking.objects.select_related('client__user', 'room'),
+        id=booking_id,
+        owner=owner,
+    )
+    booking.status = action
+    booking.save(update_fields=['status'])
+    return JsonResponse({'success': True, 'status': booking.status})
 
 @csrf_protect
 @require_http_methods(["POST"])
@@ -130,38 +230,41 @@ def unlock_room(request):
         data = json.loads(request.body)
         room_id = data.get('room_id')
         room = get_object_or_404(Room, id=room_id)
-        
-        # Check if already unlocked via ClientPayment
-        client_payment = ClientPayment.objects.filter(
-            client=request.user.client,
+        if room.owner is None:
+            return JsonResponse({'error': 'Room owner unavailable'}, status=404)
+        client = getattr(request.user, 'client', None)
+        if client is None or room.owner is None:
+            return JsonResponse({'success': False, 'error': 'Client and room owner are required'}, status=403)
+
+        # Chat is a free feature.  Do not make this depend on DEBUG: production
+        # clients must use the same reliable HTTP fallback as local clients.
+        client_payment, _ = ClientPayment.objects.update_or_create(
+            client=client,
             room=room,
-            status='success'
-        ).first()
-        
-        if client_payment:
-            contact_details = {
+            defaults={
+                'owner': room.owner,
+                'amount': 0,
+                'transaction_id': f'free_chat_{request.user.id}_{room.id}',
+                'status': 'success',
+                'paid_at': timezone.now(),
+            },
+        )
+        return JsonResponse({
+            'success': True,
+            'message': 'Chat access granted.',
+            'contact_details': {
                 'phone': room.contact_phone,
                 'email': room.contact_email,
                 'location': room.location,
                 'owner_name': room.owner.user.get_full_name() or room.owner.user.username,
                 'can_message': True,
-                'already_unlocked': True
-            }
-            
-            return JsonResponse({
-                'success': True, 
-                'message': 'Room already unlocked! You can message the owner.',
-                'contact_details': contact_details
-            })
-        else:
-            return JsonResponse({
-                'success': False,
-                'error': 'Payment required',
-                'requires_payment': True,
-                'amount': 30
-            })
+                'already_unlocked': True,
+            },
+        })
+
     except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)})
+        logger.exception('Unable to grant chat access')
+        return JsonResponse({'success': False, 'error': 'Unable to access chat'}, status=400)
 
 @csrf_protect
 @require_http_methods(["POST"])
@@ -220,6 +323,8 @@ def send_sms_inquiry(request):
         message = data.get('message')
         
         room = get_object_or_404(Room, id=room_id)
+        if room.owner is None:
+            return JsonResponse({'error': 'Room owner unavailable'}, status=404)
         
         # Simulate SMS sending
         return JsonResponse({
@@ -255,7 +360,16 @@ def edit_room(request, room_id):
     if request.method == 'POST':
         form = RoomForm(request.POST, request.FILES, instance=room)
         if form.is_valid():
+            images = request.FILES.getlist('room_images')
+            if len(images) > 5:
+                form.add_error(None, 'You can upload a maximum of 5 images.')
+                return render(request, 'started/edit_room.html', {'form': form, 'room': room})
             form.save()
+            try:
+                upload_images(room, images)
+            except ValueError as exc:
+                form.add_error(None, str(exc))
+                return render(request, 'started/edit_room.html', {'form': form, 'room': room})
             messages.success(request, 'Room updated successfully!')
             return redirect('owner_dashboard')
     else:
@@ -423,8 +537,16 @@ def send_message(request):
         elif hasattr(request.user, 'owner') and room.owner == request.user.owner:
             if client_id:
                 receiver = get_object_or_404(User, id=client_id)
+                if not hasattr(receiver, 'client'):
+                    return JsonResponse({'error': 'Client account required'}, status=400)
                 client = receiver.client
                 owner = request.user.owner
+                # Owners may only reply to clients who have a conversation in
+                # this room; this prevents cross-room message injection.
+                if not Message.objects.filter(
+                    room=room, sender=receiver, receiver=request.user
+                ).exists():
+                    return JsonResponse({'error': 'No conversation with this client'}, status=403)
             else:
                 # Find the first client who has messaged in this room
                 client_message = Message.objects.filter(
@@ -469,6 +591,7 @@ def send_message(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
+@csrf_protect
 @login_required
 def mark_messages_read(request):
     if request.method == 'POST':
@@ -499,6 +622,18 @@ def profile_settings(request):
     profile, created = UserProfile.objects.get_or_create(user=request.user)
     
     if request.method == 'POST':
+        uploaded_image = request.FILES.get('profile_image')
+        if uploaded_image:
+            if uploaded_image.size > 5 * 1024 * 1024:
+                messages.error(request, 'Profile image must be 5MB or smaller.')
+                return redirect('profile_settings')
+            try:
+                from PIL import Image
+                with Image.open(uploaded_image) as opened:
+                    opened.verify()
+            except (ImportError, OSError, ValueError):
+                messages.error(request, 'Please upload a valid image file.')
+                return redirect('profile_settings')
         # Update user fields
         username = request.POST.get('username')
         email = request.POST.get('email')
@@ -514,16 +649,20 @@ def profile_settings(request):
         new_password = request.POST.get('new_password')
         confirm_password = request.POST.get('confirm_password')
         
+        if not username or not email:
+            messages.error(request, 'Username and email are required.')
         # Validate username uniqueness
-        if username != request.user.username and User.objects.filter(username=username).exists():
+        elif username != request.user.username and User.objects.filter(username=username).exists():
             messages.error(request, 'Username already exists')
         # Validate email uniqueness
         elif email != request.user.email and User.objects.filter(email=email).exists():
             messages.error(request, 'Email already registered')
         # Validate password change
-        elif current_password and new_password:
+        elif current_password or new_password or confirm_password:
             if not request.user.check_password(current_password):
                 messages.error(request, 'Current password is incorrect')
+            elif not new_password:
+                messages.error(request, 'Enter a new password.')
             elif new_password != confirm_password:
                 messages.error(request, 'New passwords do not match')
             elif len(new_password) < 8:
@@ -540,12 +679,13 @@ def profile_settings(request):
                 # Update profile info
                 profile.phone_number = phone_number
                 profile.bio = bio
-                if 'profile_image' in request.FILES:
-                    profile.profile_image = request.FILES['profile_image']
+                if uploaded_image:
+                    profile.profile_image = uploaded_image
                 profile.save()
                 
-                messages.success(request, 'Profile updated successfully! Please login again.')
-                return redirect('login')
+                update_session_auth_hash(request, request.user)
+                messages.success(request, 'Profile updated successfully!')
+                return redirect('profile_settings')
         else:
             # Update without password change
             request.user.username = username
@@ -556,8 +696,8 @@ def profile_settings(request):
             
             profile.phone_number = phone_number
             profile.bio = bio
-            if 'profile_image' in request.FILES:
-                profile.profile_image = request.FILES['profile_image']
+            if uploaded_image:
+                profile.profile_image = uploaded_image
             profile.save()
             
             messages.success(request, 'Profile updated successfully!')
@@ -954,12 +1094,19 @@ def chat_room(request, room_id):
 def get_room_info(request, room_id):
     try:
         room = get_object_or_404(Room, id=room_id)
+
+        def format_coordinate(value):
+            if value is None:
+                return ''
+            formatted = format(value, 'f').rstrip('0').rstrip('.')
+            return formatted or '0'
+
         return JsonResponse({
             'owner_name': room.owner.user.get_full_name() or room.owner.user.username,
             'room_title': room.title,
             'location': room.location,
-            'latitude': str(room.latitude) if room.latitude is not None else '',
-            'longitude': str(room.longitude) if room.longitude is not None else '',
+            'latitude': format_coordinate(room.latitude),
+            'longitude': format_coordinate(room.longitude),
         })
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)

@@ -259,7 +259,7 @@ async function toggleFavorite(roomId) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                'X-CSRFToken': getCsrfToken()
             },
             body: JSON.stringify({ room_id: roomId })
         });
@@ -288,7 +288,7 @@ async function handleRoomChat(roomId) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                'X-CSRFToken': getCsrfToken()
             },
             body: JSON.stringify({ room_id: roomId })
         });
@@ -328,7 +328,7 @@ async function markMessagesAsRead(roomId) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                'X-CSRFToken': getCsrfToken()
             },
             body: JSON.stringify({ room_id: roomId })
         });

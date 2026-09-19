@@ -43,6 +43,21 @@
     <script src="https://js.stripe.com/v3/"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        function getCsrfToken() {
+            const cookieToken = document.cookie
+                .split('; ')
+                .find((row) => row.startsWith('csrftoken='));
+            if (cookieToken) {
+                return decodeURIComponent(cookieToken.split('=')[1]);
+            }
+
+            const tokenInput = Array.from(
+                document.querySelectorAll('[name=csrfmiddlewaretoken]')
+            ).find((input) => input.value && input.value.length === 64);
+            return tokenInput ? tokenInput.value : '';
+        }
+    </script>
     <script src="{% static 'started/js/main.js' %}"></script>
     <script src="{% static 'started/js/room_unlock.js' %}"></script>
     <script src="{% static 'started/js/notifications.js' %}"></script>

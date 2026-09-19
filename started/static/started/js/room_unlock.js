@@ -5,7 +5,7 @@ async function handleRoomUnlock(roomId) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': getCookie('csrftoken')
+                'X-CSRFToken': getCsrfToken()
             },
             body: JSON.stringify({ room_id: roomId })
         });
@@ -29,8 +29,24 @@ async function handleRoomUnlock(roomId) {
     }
 }
 
-// Alias for compatibility
-window.handleRoomChat = handleRoomUnlock;
+// Preserve the dashboard-specific handler when one is already defined.
+if (typeof window.handleRoomChat !== 'function') {
+    window.handleRoomChat = handleRoomUnlock;
+}
+
+function getCsrfToken() {
+    const cookie = document.cookie
+        .split('; ')
+        .find((row) => row.startsWith('csrftoken='));
+    if (cookie) {
+        return decodeURIComponent(cookie.substring('csrftoken='.length));
+    }
+
+    const tokenInput = Array.from(
+        document.querySelectorAll('[name=csrfmiddlewaretoken]')
+    ).find((input) => input.value && input.value.length === 64);
+    return tokenInput ? tokenInput.value : '';
+}
 
 function getCookie(name) {
     let cookieValue = null;

@@ -10,8 +10,8 @@
             <div class="profile-dropdown" style="display: block !important;">
                 <button class="profile-btn" id="profileBtn">
                     <div class="profile-avatar">
-                        {% if user.userprofile.profile_image %}
-                            <img src="{{ user.userprofile.profile_image.url }}" alt="{{ user.username }}">
+                        {% if user.userprofile.get_profile_image %}
+                            <img src="{{ user.userprofile.get_profile_image }}" alt="{{ user.username }}">
                         {% else %}
                             <i class="fas fa-user"></i>
                         {% endif %}
@@ -22,8 +22,8 @@
                 <div class="profile-menu" id="profileMenu">
                     <div class="profile-info">
                         <div class="profile-avatar-large">
-                            {% if user.userprofile.profile_image %}
-                                <img src="{{ user.userprofile.profile_image.url }}" alt="{{ user.username }}">
+                            {% if user.userprofile.get_profile_image %}
+                                <img src="{{ user.userprofile.get_profile_image }}" alt="{{ user.username }}">
                             {% else %}
                                 <i class="fas fa-user"></i>
                             {% endif %}
