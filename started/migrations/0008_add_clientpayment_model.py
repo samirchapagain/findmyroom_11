@@ -10,23 +10,6 @@ class Migration(migrations.Migration):
         ('started', '0007_alter_message_options_and_more'),
     ]
 
-    operations = [
-        migrations.CreateModel(
-            name='ClientPayment',
-            fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('amount', models.DecimalField(decimal_places=2, default=30.0, max_digits=10)),
-                ('status', models.CharField(choices=[('pending', 'Pending'), ('success', 'Success'), ('failed', 'Failed')], default='pending', max_length=20)),
-                ('transaction_id', models.CharField(max_length=200, unique=True)),
-                ('esewa_ref_id', models.CharField(blank=True, max_length=200, null=True)),
-                ('paid_at', models.DateTimeField(blank=True, null=True)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('client', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='started.client')),
-                ('owner', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='started.owner')),
-                ('room', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='started.room')),
-            ],
-            options={
-                'unique_together': {('client', 'room')},
-            },
-        ),
-    ]
+    # ClientPayment was already included in 0007.  Keep this migration as a
+    # no-op so a fresh database does not attempt to create the table twice.
+    operations = []

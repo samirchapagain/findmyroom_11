@@ -87,6 +87,76 @@ class ViewTests(TestCase):
     def test_register_view(self):
         response = self.client.get(reverse('register'))
         self.assertEqual(response.status_code, 200)
+
+    def test_client_registration_creates_profile_and_redirects(self):
+        response = self.client.post(reverse('register'), {
+            'username': 'newclient',
+            'email': 'newclient@example.com',
+            'password': 'strongpass123',
+            'confirm_password': 'strongpass123',
+            'phone': '9800000000',
+            'role': 'client',
+            'preferred_location': 'Downtown',
+        })
+        self.assertRedirects(response, reverse('client_dashboard'))
+        user = User.objects.get(username='newclient')
+        self.assertTrue(user.is_authenticated)
+        self.assertTrue(Client.objects.filter(user=user, preferred_location='Downtown').exists())
+        self.assertTrue(UserProfile.objects.filter(user=user).exists())
+
+    def test_owner_registration_creates_profile_and_redirects(self):
+        response = self.client.post(reverse('register'), {
+            'username': 'newowner',
+            'email': 'newowner@example.com',
+            'password': 'strongpass123',
+            'confirm_password': 'strongpass123',
+            'phone': '9800000001',
+            'role': 'owner',
+            'address': 'Owner Address',
+        })
+        self.assertRedirects(response, reverse('owner_dashboard'))
+        user = User.objects.get(username='newowner')
+        self.assertTrue(Owner.objects.filter(user=user, address='Owner Address').exists())
+        self.assertTrue(UserProfile.objects.filter(user=user).exists())
+
+    def test_owner_registration_requires_address_without_creating_user(self):
+        response = self.client.post(reverse('register'), {
+            'username': 'missingaddress',
+            'email': 'missingaddress@example.com',
+            'password': 'strongpass123',
+            'confirm_password': 'strongpass123',
+            'phone': '9800000002',
+            'role': 'owner',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(User.objects.filter(username='missingaddress').exists())
+
+    def test_login_and_logout_follow_role(self):
+        response = self.client.post(reverse('login'), {
+            'username': 'owner',
+            'password': 'testpass123',
+            'role': 'owner',
+        })
+        self.assertRedirects(response, reverse('owner_dashboard'))
+        response = self.client.get(reverse('logout'))
+        self.assertRedirects(response, reverse('login'))
+        response = self.client.post(reverse('login'), {
+            'username': 'client',
+            'password': 'testpass123',
+            'role': 'client',
+        })
+        self.assertRedirects(response, reverse('client_dashboard'))
+
+    def test_login_preserves_safe_role_redirect(self):
+        response = self.client.get(reverse('client_dashboard'))
+        self.assertEqual(response.status_code, 302)
+        response = self.client.post(reverse('login') + '?next=/client/dashboard/', {
+            'username': 'client',
+            'password': 'testpass123',
+            'role': 'client',
+            'next': '/client/dashboard/',
+        })
+        self.assertRedirects(response, reverse('client_dashboard'))
         
     def test_client_dashboard_requires_login(self):
         response = self.client.get(reverse('client_dashboard'))

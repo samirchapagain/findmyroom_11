@@ -23,6 +23,7 @@
         <form method="POST" class="auth-form">
             {% csrf_token %}
             <input type="hidden" id="role" name="role" value="client">
+            <input type="hidden" name="next" value="{{ request.GET.next }}">
             
             <div class="form-group">
                 <label for="username">

@@ -8,9 +8,10 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.contrib.auth.decorators import login_required
 from django.conf import settings
+from django.db import transaction
 from django.core.mail import send_mail
 from django.contrib.auth.tokens import default_token_generator
-from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode, url_has_allowed_host_and_scheme
 from django.utils.encoding import force_bytes, force_str
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
@@ -584,6 +585,7 @@ def login_view(request):
         username = request.POST.get('username')
         password = request.POST.get('password')
         role = request.POST.get('role')
+        next_url = request.POST.get('next') or request.GET.get('next')
         
         if not username or not password or not role:
             messages.error(request, 'All fields are required')
@@ -596,6 +598,10 @@ def login_view(request):
                         user.owner
                         login(request, user)
                         messages.success(request, f'Welcome back, {user.username}!')
+                        if next_url and url_has_allowed_host_and_scheme(
+                            next_url, allowed_hosts={request.get_host()}
+                        ) and next_url.startswith('/owner/'):
+                            return redirect(next_url)
                         return redirect('owner_dashboard')
                     except Owner.DoesNotExist:
                         messages.error(request, f'No Owner profile found for user {user.username}. Please register as Owner first.')
@@ -604,6 +610,10 @@ def login_view(request):
                         user.client
                         login(request, user)
                         messages.success(request, f'Welcome back, {user.username}!')
+                        if next_url and url_has_allowed_host_and_scheme(
+                            next_url, allowed_hosts={request.get_host()}
+                        ) and next_url.startswith('/client/'):
+                            return redirect(next_url)
                         return redirect('client_dashboard')
                     except Client.DoesNotExist:
                         messages.error(request, f'No Client profile found for user {user.username}. Please register as Client first.')
@@ -614,6 +624,7 @@ def login_view(request):
     
     return render(request, 'started/login.html')
 
+@transaction.atomic
 def register_view(request):
     if request.user.is_authenticated:
         try:
@@ -635,25 +646,31 @@ def register_view(request):
         confirm_password = request.POST.get('confirm_password')
         role = request.POST.get('role')
         phone = request.POST.get('phone')
+        address = request.POST.get('address', '').strip()
+        preferred_location = request.POST.get('preferred_location', '').strip()
         
         # Validation
         if not username or not email or not password or not role or not phone:
             messages.error(request, 'All fields are required')
+        elif role not in {'owner', 'client'}:
+            messages.error(request, 'Invalid role selected')
         elif len(password) < 8:
             messages.error(request, 'Password must be at least 8 characters long')
         elif password != confirm_password:
             messages.error(request, 'Passwords do not match')
+        elif role == 'owner' and not address:
+            messages.error(request, 'Address is required for Owner account')
         elif User.objects.filter(username=username).exists():
             messages.error(request, 'Username already exists')
         elif User.objects.filter(email=email).exists():
             messages.error(request, 'Email already registered')
         else:
+            user = None
             try:
                 user = User.objects.create_user(username=username, email=email, password=password)
                 UserProfile.objects.create(user=user)
                 
                 if role == 'owner':
-                    address = request.POST.get('address')
                     if not address:
                         messages.error(request, 'Address is required for Owner account')
                         user.delete()
@@ -669,7 +686,6 @@ def register_view(request):
                     return redirect('owner_dashboard')
                     
                 elif role == 'client':
-                    preferred_location = request.POST.get('preferred_location', '')
                     client = Client.objects.create(
                         user=user,
                         phone=phone,
@@ -683,6 +699,8 @@ def register_view(request):
                     user.delete()
                     
             except Exception as e:
+                if user is not None:
+                    user.delete()
                 messages.error(request, f'Registration failed: {str(e)}')
     
     return render(request, 'started/register.html')
