@@ -20,12 +20,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-l!-61i)7rkq1a8*2%=2w4lq0xble^5_gzix)b(#gah_j&4zyly'
+import os
+SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-l!-61i)7rkq1a8*2%=2w4lq0xble^5_gzix)b(#gah_j&4zyly')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DEBUG', 'True').lower() == 'true'
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',') if os.environ.get('ALLOWED_HOSTS') else ['localhost', '127.0.0.1']
 
 
 # Application definition
@@ -49,6 +50,8 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'started.rate_limit.RateLimitMiddleware',
+    'started.middleware.ErrorHandlingMiddleware',
 ]
 
 ROOT_URLCONF = 'myproject.urls'
@@ -60,9 +63,11 @@ TEMPLATES = [
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
+                'django.template.context_processors.debug',
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'django.template.context_processors.media',
             ],
         },
     },
@@ -78,6 +83,10 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        'OPTIONS': {
+            'timeout': 20,
+            'init_command': "PRAGMA foreign_keys=ON;",
+        }
     }
 }
 
@@ -140,21 +149,38 @@ CHANNEL_LAYERS = {
     },
 }
 
+# Fallback to in-memory channel layer if Redis is not available
+try:
+    import redis
+    redis.Redis(host='127.0.0.1', port=6379, db=0).ping()
+except (ImportError, redis.ConnectionError, redis.TimeoutError, Exception):
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        },
+    }
+
 # Stripe Configuration (Optional - only needed for card payments)
-STRIPE_PUBLISHABLE_KEY = ''
-STRIPE_SECRET_KEY = ''
-STRIPE_WEBHOOK_SECRET = ''
+STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', '')
+STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '')
+STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
 
-# Khalti Configuration
-KHALTI_PUBLIC_KEY = 'test_public_key_dc74e0fd57cb46cd93832aee0a390234'
-KHALTI_SECRET_KEY = 'test_secret_key_f59e8b7d18b4499ca40f68195a846e9b'
+# Security settings
+SECURE_BROWSER_XSS_FILTER = True
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
+CSRF_COOKIE_SECURE = not DEBUG
+SESSION_COOKIE_SECURE = not DEBUG
+SECURE_SSL_REDIRECT = not DEBUG
+SECURE_HSTS_SECONDS = 31536000 if not DEBUG else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+SECURE_HSTS_PRELOAD = True
 
-# eSewa Configuration
-ESEWA_MERCHANT_CODE = 'EPAYTEST'  # Replace with your merchant code for production
-ESEWA_SUCCESS_URL = '/esewa-success/'
-ESEWA_FAILURE_URL = '/esewa-failure/'
-ESEWA_PAYMENT_URL = 'https://uat.esewa.com.np/epay/main'  # UAT for testing
-ESEWA_VERIFY_URL = 'https://uat.esewa.com.np/epay/transrec'  # UAT for testing
+# CSRF Protection
+CSRF_COOKIE_HTTPONLY = True
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Strict'
+CSRF_COOKIE_SAMESITE = 'Strict'
 
 # Authentication URLs
 LOGIN_URL = '/login/'
@@ -165,8 +191,61 @@ EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'samirchapagain10@gmail.com'
-EMAIL_HOST_PASSWORD = 'ouib zqce ykaa jqvd'  # Gmail App Password
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', 'samirchapagain10@gmail.com')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', 'ouib zqce ykaa jqvd')  # Use environment variable
 
-DEFAULT_FROM_EMAIL = 'LuxeRooms <samirchapagain10@gmail.com>'
+DEFAULT_FROM_EMAIL = f'LuxeRooms <{EMAIL_HOST_USER}>'
 SERVER_EMAIL = DEFAULT_FROM_EMAIL
+
+# Cache Configuration for Rate Limiting
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'unique-snowflake',
+    }
+}
+
+# Logging Configuration
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'file': {
+            'level': 'ERROR',
+            'class': 'logging.FileHandler',
+            'filename': BASE_DIR / 'logs' / 'django.log',
+            'formatter': 'verbose',
+        },
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+    },
+    'root': {
+        'handlers': ['console', 'file'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'started': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG' if DEBUG else 'INFO',
+            'propagate': False,
+        },
+    },
+}

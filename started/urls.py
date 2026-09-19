@@ -2,9 +2,9 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    path('', views.home_view, name='home'),
     path('client/dashboard/', views.client_dashboard, name='client_dashboard'),
     path('owner/dashboard/', views.owner_dashboard, name='owner_dashboard'),
+    path('', views.client_dashboard, name='home'),
     path('unlock/', views.unlock_room, name='unlock_room'),
     path('voice-search/', views.voice_search, name='voice_search'),
     path('sms-inquiry/', views.send_sms_inquiry, name='sms_inquiry'),
@@ -16,9 +16,7 @@ urlpatterns = [
     path('api/messages/send/', views.send_message, name='send_message'),
     path('api/messages/read/', views.mark_messages_read, name='mark_messages_read'),
     path('api/unread-count/', views.get_unread_count, name='get_unread_count'),
-    path('api/unread-messages/', views.unread_messages_api, name='unread_messages_api'),
-
-
+    path('chat/<int:room_id>/', views.chat_room, name='chat_room'),
     path('login/', views.login_view, name='login'),
     path('register/', views.register_view, name='register'),
     path('logout/', views.logout_view, name='logout'),
@@ -27,14 +25,9 @@ urlpatterns = [
     path('esewa-success/', views.esewa_success, name='esewa_success'),
     path('esewa-failure/', views.esewa_failure, name='esewa_failure'),
     path('esewa-webhook/', views.esewa_webhook, name='esewa_webhook'),
-    path('khalti-verify/', views.khalti_verify, name='khalti_verify'),
     path('api/room/<int:room_id>/', views.get_room_info, name='get_room_info'),
     path('profile/', views.profile_settings, name='profile_settings'),
     path('api/owner-messages/', views.get_owner_messages, name='get_owner_messages'),
     path('api/client-messages/', views.get_client_messages, name='get_client_messages'),
     path('api/test-send/', views.test_send_message, name='test_send_message'),
-    path('api/favorites/toggle/', views.toggle_favorite, name='toggle_favorite'),
-    path('api/favorites/', views.get_favorites, name='get_favorites'),
-    path('api/book-room/', views.book_room, name='book_room'),
-    path('api/booking-status/<int:room_id>/', views.get_booking_status, name='get_booking_status'),
 ]

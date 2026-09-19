@@ -12,30 +12,24 @@ from django.core.mail import send_mail
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
+from django.views.decorators.cache import never_cache
+from django.views.decorators.csrf import csrf_protect
 import json
 import stripe
-from .models import Room, Payment, ChatAccess, Message, UserProfile, Owner, Client, RoomAccess, ClientPayment, Conversation, FavoriteRoom, RoomImage, Booking
+import random
+import string
+import logging
+
+from .models import Room, Payment, ChatAccess, Message, UserProfile, Owner, Client, RoomAccess, ClientPayment, Conversation
 from django.utils import timezone
 import requests
 import hashlib
 from .forms import RoomForm
 from .decorators import owner_required, client_required
+from .security_utils import sanitize_input, safe_int
 
-stripe.api_key = settings.STRIPE_SECRET_KEY
-
-def home_view(request):
-    """Landing page for the website"""
-    # Ensure user has profile if authenticated
-    if request.user.is_authenticated:
-        UserProfile.objects.get_or_create(user=request.user)
-    
-    # Get featured rooms for display
-    featured_rooms = Room.objects.all()[:6]  # Show 6 featured rooms
-    
-    context = {
-        'featured_rooms': featured_rooms,
-    }
-    return render(request, 'started/home.html', context)
+logger = logging.getLogger(__name__)
+stripe.api_key = settings.STRIPE_SECRET_KEY if settings.STRIPE_SECRET_KEY else None
 
 @login_required
 def client_dashboard(request):
@@ -45,7 +39,7 @@ def client_dashboard(request):
     # Check if user has client profile, create if missing
     try:
         client = request.user.client
-    except Client.DoesNotExist:
+    except (Client.DoesNotExist, AttributeError):
         messages.error(request, 'No Client profile found. Please register as Client first.')
         return redirect('register')
     
@@ -57,7 +51,6 @@ def client_dashboard(request):
     price_min = request.GET.get('price_min')
     price_max = request.GET.get('price_max')
     room_type = request.GET.get('room_type')
-    favorites_only = request.GET.get('favorites_only')
     
     if q:
         rooms = rooms.filter(
@@ -78,52 +71,24 @@ def client_dashboard(request):
     if room_type and room_type != 'Any Type':
         rooms = rooms.filter(room_type=room_type)
     
-    if favorites_only:
-        favorite_room_ids = FavoriteRoom.objects.filter(client=client).values_list('room_id', flat=True)
-        rooms = rooms.filter(id__in=favorite_room_ids)
-    
     # Check which rooms user has paid for
     unlocked_rooms = []
-    favorite_rooms = []
     if request.user.is_authenticated:
         try:
             unlocked_rooms = ClientPayment.objects.filter(
                 client=client,
                 status='success'
             ).values_list('room_id', flat=True)
-            
-            favorite_rooms = FavoriteRoom.objects.filter(
-                client=client
-            ).values_list('room_id', flat=True)
         except:
             unlocked_rooms = []
-            favorite_rooms = []
     
     context = {
         'rooms': rooms,
         'unlocked_rooms': list(unlocked_rooms),
-        'favorite_rooms': list(favorite_rooms),
         'room_unlock_price': 30,  # Rs 30 per room
     }
     return render(request, 'started/client_dashboard.html', context)
-@login_required
-def unread_messages_api(request):
-    unread = (
-        Message.objects
-        .filter(receiver=request.user, read_status=False)
-        .values('room_id')
-        .annotate(unread_count=Count('id'))
-    )
 
-    data = [
-        {
-            "id": item["room_id"],
-            "unread_count": item["unread_count"]
-        }
-        for item in unread
-    ]
-
-    return JsonResponse(data, safe=False)
 @login_required
 def owner_dashboard(request):
     # Ensure user has profile
@@ -132,43 +97,30 @@ def owner_dashboard(request):
     # Check if user has owner profile, create if missing
     try:
         owner = request.user.owner
-    except Owner.DoesNotExist:
+    except (Owner.DoesNotExist, AttributeError):
         messages.error(request, 'No Owner profile found. Please register as Owner first.')
         return redirect('register')
     
     if request.method == 'POST':
         form = RoomForm(request.POST, request.FILES)
-        
         if form.is_valid():
             room = form.save(commit=False)
             room.owner = owner
             room.save()
-            
-            # Handle multiple image uploads
-            images = request.FILES.getlist('room_images')
-            for i, image in enumerate(images[:5]):
-                RoomImage.objects.create(
-                    room=room,
-                    image=image,
-                    is_primary=(i == 0)
-                )
-            
             messages.success(request, 'Room listing added successfully!')
             return redirect('owner_dashboard')
-        else:
-            messages.error(request, 'Please correct the errors in the form.')
     else:
         form = RoomForm()
     
-    owner_rooms = Room.objects.filter(owner=owner).order_by('-created_at')
-    
+    owner_rooms = Room.objects.filter(owner=owner)[:10]
     return render(request, 'started/owner_dashboard.html', {
         'form': form,
         'owner_rooms': owner_rooms
     })
 
-@csrf_exempt
+@csrf_protect
 @require_http_methods(["POST"])
+@login_required
 def unlock_room(request):
     if not request.user.is_authenticated:
         return JsonResponse({'success': False, 'error': 'Authentication required'})
@@ -210,8 +162,9 @@ def unlock_room(request):
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)})
 
-@csrf_exempt
+@csrf_protect
 @require_http_methods(["POST"])
+@login_required
 def voice_search(request):
     try:
         data = json.loads(request.body)
@@ -256,8 +209,9 @@ def voice_search(request):
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)})
 
-@csrf_exempt
+@csrf_protect
 @require_http_methods(["POST"])
+@login_required
 def send_sms_inquiry(request):
     try:
         data = json.loads(request.body)
@@ -299,24 +253,8 @@ def edit_room(request, room_id):
     room = get_object_or_404(Room, id=room_id, owner=owner)
     if request.method == 'POST':
         form = RoomForm(request.POST, request.FILES, instance=room)
-        
         if form.is_valid():
-            room = form.save()
-            
-            # Handle multiple image uploads
-            images = request.FILES.getlist('room_images')
-            if images:
-                # Delete existing images if new ones are uploaded
-                room.images.all().delete()
-                
-                # Add new images
-                for i, image in enumerate(images[:5]):  # Limit to 5 images
-                    RoomImage.objects.create(
-                        room=room,
-                        image=image,
-                        is_primary=(i == 0)  # First image is primary
-                    )
-            
+            form.save()
             messages.success(request, 'Room updated successfully!')
             return redirect('owner_dashboard')
     else:
@@ -459,7 +397,7 @@ def get_messages(request):
     
     return JsonResponse({'messages': messages_data})
 
-@csrf_exempt
+@csrf_protect
 @login_required
 def send_message(request):
     if request.method != 'POST':
@@ -469,7 +407,7 @@ def send_message(request):
         data = json.loads(request.body)
         room_id = data.get('room_id')
         client_id = data.get('client_id')
-        content = data.get('content', '').strip()
+        content = sanitize_input(data.get('content', '')).strip()
         
         if not content:
             return JsonResponse({'error': 'Message content required'}, status=400)
@@ -479,9 +417,13 @@ def send_message(request):
         # Determine receiver based on sender role
         if hasattr(request.user, 'client'):
             receiver = room.owner.user
+            client = request.user.client
+            owner = room.owner
         elif hasattr(request.user, 'owner') and room.owner == request.user.owner:
             if client_id:
                 receiver = get_object_or_404(User, id=client_id)
+                client = receiver.client
+                owner = request.user.owner
             else:
                 # Find the first client who has messaged in this room
                 client_message = Message.objects.filter(
@@ -491,25 +433,19 @@ def send_message(request):
                 
                 if client_message:
                     receiver = client_message.sender
+                    client = receiver.client
+                    owner = request.user.owner
                 else:
                     return JsonResponse({'error': 'No client found to send message to'}, status=400)
         else:
             return JsonResponse({'error': 'Access denied'}, status=403)
         
         # Get or create conversation
-        if hasattr(request.user, 'client'):
-            conversation, created = Conversation.objects.get_or_create(
-                client=request.user.client,
-                owner=room.owner,
-                room=room
-            )
-        else:
-            # Owner sending to client
-            conversation, created = Conversation.objects.get_or_create(
-                client=receiver.client,
-                owner=request.user.owner,
-                room=room
-            )
+        conversation, created = Conversation.objects.get_or_create(
+            client=client,
+            owner=owner,
+            room=room
+        )
         
         message = Message.objects.create(
             conversation=conversation,
@@ -794,8 +730,6 @@ def esewa_webhook(request):
                         
                         if client_payment:
                             # Generate unique verification code
-                            import random
-                            import string
                             verification_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
                             
                             # Update payment status
@@ -861,7 +795,7 @@ def esewa_success(request):
                     'amount': 30.00,
                     'transaction_id': oid,
                     'esewa_ref_id': refId,
-                    'verification_code': ''.join(__import__('random').choices(__import__('string').ascii_uppercase + __import__('string').digits, k=6)),
+                    'verification_code': ''.join(random.choices(string.ascii_uppercase + string.digits, k=6)),
                     'status': 'success',
                     'paid_at': timezone.now()
                 }
@@ -870,7 +804,7 @@ def esewa_success(request):
             if not created:
                 client_payment.status = 'success'
                 client_payment.esewa_ref_id = refId
-                client_payment.verification_code = ''.join(__import__('random').choices(__import__('string').ascii_uppercase + __import__('string').digits, k=6))
+                client_payment.verification_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
                 client_payment.paid_at = timezone.now()
                 client_payment.save()
             
@@ -887,61 +821,6 @@ def esewa_success(request):
 def esewa_failure(request):
     messages.error(request, 'Payment failed or cancelled.')
     return redirect('client_dashboard')
-
-@csrf_exempt
-@login_required
-def khalti_verify(request):
-    if request.method == 'POST':
-        try:
-            data = json.loads(request.body)
-            token = data.get('token')
-            amount = data.get('amount')
-            room_id = data.get('room_id')
-            transaction_id = data.get('transaction_id')
-            
-            # Verify payment with Khalti API
-            import requests
-            
-            verify_url = 'https://khalti.com/api/v2/payment/verify/'
-            headers = {
-                'Authorization': f'Key {settings.KHALTI_SECRET_KEY}'
-            }
-            verify_data = {
-                'token': token,
-                'amount': amount
-            }
-            
-            response = requests.post(verify_url, headers=headers, data=verify_data)
-            
-            if response.status_code == 200 and amount == 3000:  # Rs. 30 = 3000 paisa
-                room = get_object_or_404(Room, id=room_id)
-                
-                # Update or create ClientPayment record
-                client_payment, created = ClientPayment.objects.get_or_create(
-                    client=request.user.client,
-                    room=room,
-                    defaults={
-                        'owner': room.owner,
-                        'amount': 30.00,
-                        'transaction_id': transaction_id,
-                        'status': 'success',
-                        'paid_at': timezone.now()
-                    }
-                )
-                
-                if not created:
-                    client_payment.status = 'success'
-                    client_payment.paid_at = timezone.now()
-                    client_payment.save()
-                
-                return JsonResponse({'success': True, 'message': 'Payment verified successfully'})
-            else:
-                return JsonResponse({'success': False, 'error': 'Payment verification failed'})
-                
-        except Exception as e:
-            return JsonResponse({'success': False, 'error': str(e)})
-    
-    return JsonResponse({'success': False, 'error': 'Invalid request'})
 
 def password_reset_view(request):
     if request.method == 'POST':
@@ -1034,44 +913,34 @@ def password_reset_confirm_view(request):
     
     return render(request, 'started/password_reset_confirm.html')
 
-
+@login_required
+def chat_room(request, room_id):
+    room = get_object_or_404(Room, id=room_id)
+    
+    # Determine other user based on sender role
+    if hasattr(request.user, 'client'):
+        other_user = room.owner.user
+    elif hasattr(request.user, 'owner') and room.owner == request.user.owner:
+        other_user = None  # Owner can see all clients
+    else:
+        messages.error(request, 'Access denied.')
+        return redirect('client_dashboard')
+    
+    context = {
+        'room': room,
+        'other_user': other_user
+    }
+    return render(request, 'started/chat_room.html', context)
 
 @login_required
 def get_room_info(request, room_id):
     try:
         room = get_object_or_404(Room, id=room_id)
-        
-        # Get all images for the room
-        images = []
-        if room.images.exists():
-            images = [request.build_absolute_uri(img.image.url) for img in room.images.all()]
-        elif room.image:
-            images = [request.build_absolute_uri(room.image.url)]
-        
-        print(f"Room {room_id} coordinates from DB: lat={room.latitude}, lng={room.longitude}")
-        print(f"Room {room_id} coordinate types: lat={type(room.latitude)}, lng={type(room.longitude)}")
-        print(f"Room {room_id} coordinate values are None: lat={room.latitude is None}, lng={room.longitude is None}")
-        
-        # Convert Decimal to string for JSON serialization
-        latitude_str = str(room.latitude) if room.latitude is not None else None
-        longitude_str = str(room.longitude) if room.longitude is not None else None
-        print(f"Room {room_id} converted coordinates: lat_str={latitude_str}, lng_str={longitude_str}")
-        
-        response_data = {
+        return JsonResponse({
             'owner_name': room.owner.user.get_full_name() or room.owner.user.username,
-            'room_title': room.title,
-            'images': images,
-            'location': room.location,
-            'latitude': latitude_str,
-            'longitude': longitude_str
-        }
-        
-        print(f"API Response for room {room_id}: {response_data}")
-        return JsonResponse(response_data)
+            'room_title': room.title
+        })
     except Exception as e:
-        print(f"Error in get_room_info: {e}")
-        import traceback
-        traceback.print_exc()
         return JsonResponse({'error': str(e)}, status=400)
 
 @login_required
@@ -1117,7 +986,6 @@ def get_client_messages(request):
                     'owner_id': room.owner.user.id,
                     'owner_name': room.owner.user.get_full_name() or room.owner.user.username,
                     'profile_image': profile_image,
-                    'room_location': room.location,
                     'last_message': latest_message.content[:50] + ('...' if len(latest_message.content) > 50 else ''),
                     'last_message_time': latest_message.timestamp.isoformat(),
                     'unread_count': unread_count
@@ -1129,7 +997,7 @@ def get_client_messages(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
-@csrf_exempt
+@csrf_protect
 @login_required
 def test_send_message(request):
     """Simple test function to debug message sending"""
@@ -1139,7 +1007,7 @@ def test_send_message(request):
     try:
         data = json.loads(request.body)
         room_id = data.get('room_id')
-        content = data.get('content', '').strip()
+        content = sanitize_input(data.get('content', '')).strip()
         
         if not room_id or not content:
             return JsonResponse({'error': 'Room ID and content required'}, status=400)
@@ -1149,6 +1017,8 @@ def test_send_message(request):
         # Simple logic: client sends to owner, owner sends to first client who messaged
         if hasattr(request.user, 'client'):
             receiver = room.owner.user
+            client = request.user.client
+            owner = room.owner
         elif hasattr(request.user, 'owner'):
             # Find any client who has messaged in this room
             client_message = Message.objects.filter(
@@ -1158,12 +1028,22 @@ def test_send_message(request):
             
             if client_message:
                 receiver = client_message.sender
+                client = receiver.client
+                owner = request.user.owner
             else:
                 return JsonResponse({'error': 'No client found to reply to'}, status=400)
         else:
             return JsonResponse({'error': 'Access denied'}, status=403)
         
+        # Get or create conversation
+        conversation, created = Conversation.objects.get_or_create(
+            client=client,
+            owner=owner,
+            room=room
+        )
+        
         message = Message.objects.create(
+            conversation=conversation,
             sender=request.user,
             receiver=receiver,
             room=room,
@@ -1184,49 +1064,6 @@ def test_send_message(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
-@csrf_exempt
-@login_required
-def toggle_favorite(request):
-    if request.method != 'POST':
-        return JsonResponse({'error': 'POST required'}, status=405)
-    
-    try:
-        client = request.user.client
-    except Client.DoesNotExist:
-        return JsonResponse({'error': 'Client account required'}, status=403)
-    
-    try:
-        data = json.loads(request.body)
-        room_id = data.get('room_id')
-        room = get_object_or_404(Room, id=room_id)
-        
-        favorite, created = FavoriteRoom.objects.get_or_create(
-            client=client,
-            room=room
-        )
-        
-        if not created:
-            favorite.delete()
-            return JsonResponse({'success': True, 'favorited': False})
-        else:
-            return JsonResponse({'success': True, 'favorited': True})
-            
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
-
-@login_required
-def get_favorites(request):
-    try:
-        client = request.user.client
-    except Client.DoesNotExist:
-        return JsonResponse({'error': 'Client account required'}, status=403)
-    
-    try:
-        favorites = FavoriteRoom.objects.filter(client=client).select_related('room')
-        favorite_rooms = [fav.room.id for fav in favorites]
-        return JsonResponse({'favorites': favorite_rooms})
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
 @login_required
 def get_owner_messages(request):
     try:
@@ -1278,162 +1115,15 @@ def get_owner_messages(request):
                     'room_id': latest_message.room.id,
                     'room_title': latest_message.room.title,
                     'client_id': client_user.id,
-                    'room_location': latest_message.room.location,
                     'client_name': client_user.get_full_name() or client_user.username,
                     'profile_image': profile_image,
                     'last_message': latest_message.content[:50] + ('...' if len(latest_message.content) > 50 else ''),
                     'last_message_time': latest_message.timestamp.isoformat(),
-                     'unread_count': unread_count
+                    'unread_count': unread_count
                 })
         
         conversations.sort(key=lambda x: x['last_message_time'], reverse=True)
         return JsonResponse({'conversations': conversations})
         
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
-
-@csrf_exempt
-@login_required
-def book_room(request):
-    if request.method != 'POST':
-        return JsonResponse({'error': 'POST required'}, status=405)
-    
-    try:
-        client = request.user.client
-    except Client.DoesNotExist:
-        return JsonResponse({'error': 'Client account required'}, status=403)
-    
-    try:
-        data = json.loads(request.body)
-        room_id = data.get('room_id')
-        room = get_object_or_404(Room, id=room_id)
-        
-        # Check if already booked
-        existing_booking = Booking.objects.filter(client=client, room=room).first()
-        
-        if existing_booking:
-            if existing_booking.status == 'pending':
-                # Cancel booking
-                existing_booking.status = 'cancelled'
-                existing_booking.save()
-                
-                # Send cancellation email to owner
-                try:
-                    send_mail(
-                        f'Booking Cancelled - {room.title}',
-                        f'''Dear {room.owner.user.get_full_name() or room.owner.user.username},
-
-A booking request has been cancelled for your property:
-
-Property: {room.title}
-Location: {room.location}
-Price: ₹{room.price}/month
-
-Client: {client.user.get_full_name() or client.user.username}
-Email: {client.user.email}
-
-The client has cancelled their booking request.
-
-Best regards,
-LuxeRooms Team''',
-                        settings.DEFAULT_FROM_EMAIL,
-                        [room.owner.user.email],
-                        fail_silently=False,
-                    )
-                except Exception as e:
-                    print(f'Email error: {e}')
-                
-                return JsonResponse({'success': True, 'action': 'cancelled', 'status': None})
-            elif existing_booking.status == 'cancelled':
-                # Reactivate booking
-                existing_booking.status = 'pending'
-                existing_booking.save()
-                
-                # Send email to owner
-                try:
-                    send_mail(
-                        f'New Booking Request - {room.title}',
-                        f'''Dear {room.owner.user.get_full_name() or room.owner.user.username},
-
-You have received a new booking request for your property:
-
-Property: {room.title}
-Location: {room.location}
-Price: ₹{room.price}/month
-
-Client Details:
-Name: {client.user.get_full_name() or client.user.username}
-Email: {client.user.email}
-Phone: {client.phone}
-
-Please contact the client to discuss availability and booking details.
-
-Best regards,
-LuxeRooms Team''',
-                        settings.DEFAULT_FROM_EMAIL,
-                        [room.owner.user.email],
-                        fail_silently=False,
-                    )
-                except Exception as e:
-                    print(f'Email error: {e}')
-                
-                return JsonResponse({'success': True, 'action': 'booked', 'status': 'pending'})
-            else:
-                return JsonResponse({'error': 'Booking already confirmed'}, status=400)
-        
-        # Create new booking
-        booking = Booking.objects.create(
-            client=client,
-            room=room,
-            owner=room.owner,
-            status='pending'
-        )
-        
-        # Send email to owner
-        try:
-            send_mail(
-                f'New Booking Request - {room.title}',
-                f'''Dear {room.owner.user.get_full_name() or room.owner.user.username},
-
-You have received a new booking request for your property:
-
-Property: {room.title}
-Location: {room.location}
-Price: ₹{room.price}/month
-
-Client Details:
-Name: {client.user.get_full_name() or client.user.username}
-Email: {client.user.email}
-Phone: {client.phone}
-
-Please contact the client to discuss availability and booking details.
-
-Best regards,
-LuxeRooms Team''',
-                settings.DEFAULT_FROM_EMAIL,
-                [room.owner.user.email],
-                fail_silently=False,
-            )
-        except Exception as e:
-            print(f'Email error: {e}')
-        
-        return JsonResponse({'success': True, 'action': 'booked', 'status': 'pending'})
-        
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
-
-@login_required
-def get_booking_status(request, room_id):
-    try:
-        client = request.user.client
-        booking = Booking.objects.filter(client=client, room_id=room_id).first()
-        
-        if booking and booking.status != 'cancelled':
-            return JsonResponse({'has_booking': True, 'status': booking.status})
-        else:
-            return JsonResponse({'has_booking': False, 'status': None})
-            
-    except Client.DoesNotExist:
-        return JsonResponse({'has_booking': False, 'status': None})
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)

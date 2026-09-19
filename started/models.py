@@ -1,9 +1,13 @@
-
+# ============================================================================
+# MODELS.PY - Database Models for LuxeRooms Platform
+# ============================================================================
+# This file defines all database tables and their relationships
+# Each model represents a table in the database
+# ============================================================================
 
 from django.db import models
 from django.contrib.auth.models import User  # Django's built-in user system
 from django.utils import timezone
-
 
 # ============================================================================
 # USER PROFILE MODEL
@@ -33,8 +37,11 @@ class UserProfile(models.Model):
     
     def get_profile_image(self):
         # Helper method to get profile image URL or None
-        if self.profile_image:
-            return self.profile_image.url
+        try:
+            if self.profile_image:
+                return self.profile_image.url
+        except (ValueError, AttributeError):
+            pass
         return None
     
     def generate_reset_pin(self):
@@ -107,8 +114,8 @@ class Room(models.Model):
     # Used in dropdown menus and filtering
     ROOM_TYPE_CHOICES = [
         ('private', 'Private Room'),      # Single occupancy room
-        ('2BHK', '2BHK'),        # Shared with roommates
-        ('3BHK', '3BHK'),   # Small apartment
+        ('shared', 'Shared Room'),        # Shared with roommates
+        ('studio', 'Studio Apartment'),   # Small apartment
         ('apartment', 'Full Apartment'),  # Complete apartment
         ('house', 'House'),              # Entire house
     ]
@@ -133,16 +140,11 @@ class Room(models.Model):
     beds = models.IntegerField(default=1)        # Number of bedrooms
     baths = models.IntegerField(default=1)       # Number of bathrooms
     
-    # Location coordinates
-    latitude = models.DecimalField(max_digits=17, decimal_places=8, null=True, blank=True)
-    longitude = models.DecimalField(max_digits=17, decimal_places=8, null=True, blank=True)
-
-    
     # Property image upload - stored in media/rooms/ folder
     image = models.ImageField(upload_to='rooms/', blank=True, null=True)
     
     # Links to the property owner
-    owner = models.ForeignKey('Owner', on_delete=models.CASCADE)
+    owner = models.ForeignKey('Owner', on_delete=models.CASCADE, null=True, blank=True)
     
     # Automatically set when room is created
     created_at = models.DateTimeField(auto_now_add=True)
@@ -193,7 +195,12 @@ class RoomAccess(models.Model):
     unlocked_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:
-        unique_together = ['client', 'room']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['client', 'room'],
+                name='unique_client_room_access'
+            )
+        ]
     
     def __str__(self):
         return f'{self.client.user.username} - {self.room.title}'
@@ -212,12 +219,17 @@ class ClientPayment(models.Model):
     status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default='pending')
     transaction_id = models.CharField(max_length=200, unique=True)
     esewa_ref_id = models.CharField(max_length=200, blank=True, null=True)
-
+    verification_code = models.CharField(max_length=6, blank=True, null=True)
     paid_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:
-        unique_together = ['client', 'room']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['client', 'room'],
+                name='unique_client_room_payment'
+            )
+        ]
     
     def __str__(self):
         return f'{self.client.user.username} - {self.room.title} - Rs.{self.amount}'
@@ -231,13 +243,18 @@ class Conversation(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
-        unique_together = ['client', 'owner', 'room']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['client', 'owner', 'room'],
+                name='unique_conversation'
+            )
+        ]
     
     def __str__(self):
         return f'{self.client.user.username} - {self.owner.user.username} - {self.room.title}'
 
 class Message(models.Model):
-    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages', null=True, blank=True)
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages')
     sender = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_messages')
     receiver = models.ForeignKey(User, on_delete=models.CASCADE, related_name='received_messages')
     room = models.ForeignKey(Room, on_delete=models.CASCADE)
@@ -251,48 +268,3 @@ class Message(models.Model):
     
     class Meta:
         ordering = ['timestamp']
-
-class FavoriteRoom(models.Model):
-    """Rooms saved as favorites by clients"""
-    client = models.ForeignKey('Client', on_delete=models.CASCADE)
-    room = models.ForeignKey(Room, on_delete=models.CASCADE)
-    created_at = models.DateTimeField(auto_now_add=True)
-    
-    class Meta:
-        unique_together = ['client', 'room']
-    
-    def __str__(self):
-        return f'{self.client.user.username} - {self.room.title}'
-
-class RoomImage(models.Model):
-    """Multiple images for each room"""
-    room = models.ForeignKey(Room, on_delete=models.CASCADE, related_name='images')
-    image = models.ImageField(upload_to='room_images/')
-    is_primary = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
-    
-    class Meta:
-        ordering = ['-is_primary', 'created_at']
-    
-    def __str__(self):
-        return f'{self.room.title} - Image {self.id}'
-
-class Booking(models.Model):
-    """Room booking requests from clients"""
-    BOOKING_STATUS_CHOICES = [
-        ('pending', 'Pending'),
-        ('confirmed', 'Confirmed'),
-        ('cancelled', 'Cancelled'),
-    ]
-    
-    client = models.ForeignKey('Client', on_delete=models.CASCADE)
-    room = models.ForeignKey(Room, on_delete=models.CASCADE)
-    owner = models.ForeignKey('Owner', on_delete=models.CASCADE)
-    status = models.CharField(max_length=20, choices=BOOKING_STATUS_CHOICES, default='pending')
-    created_at = models.DateTimeField(auto_now_add=True)
-    
-    class Meta:
-        unique_together = ['client', 'room']
-    
-    def __str__(self):
-        return f'{self.client.user.username} - {self.room.title} - {self.status}'

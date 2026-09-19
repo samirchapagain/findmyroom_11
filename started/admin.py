@@ -1,12 +1,5 @@
 from django.contrib import admin
-from .models import Room, Payment, ChatAccess, Message, Owner, Client, UserProfile, ClientPayment
-
-
-# Customize the site header, title, index title
-admin.site.site_header = "FindMyRoom Admin"
-admin.site.site_title = "FindMyRoom Dashboard"
-admin.site.index_title = "Welcome to FindMyRoom Admin Panel"
-
+from .models import Room, Payment, ChatAccess, Message, Owner, Client, UserProfile, ClientPayment, RoomAccess, Conversation
 
 @admin.register(Room)
 class RoomAdmin(admin.ModelAdmin):
@@ -53,3 +46,15 @@ class ClientAdmin(admin.ModelAdmin):
 class UserProfileAdmin(admin.ModelAdmin):
     list_display = ['user', 'phone_number']
     search_fields = ['user__username', 'user__email', 'phone_number']
+
+@admin.register(RoomAccess)
+class RoomAccessAdmin(admin.ModelAdmin):
+    list_display = ['client', 'room', 'payment', 'unlocked_at']
+    list_filter = ['unlocked_at']
+    search_fields = ['client__user__username', 'room__title']
+
+@admin.register(Conversation)
+class ConversationAdmin(admin.ModelAdmin):
+    list_display = ['client', 'owner', 'room', 'created_at', 'updated_at']
+    list_filter = ['created_at', 'updated_at']
+    search_fields = ['client__user__username', 'owner__user__username', 'room__title']
