@@ -938,7 +938,10 @@ def get_room_info(request, room_id):
         room = get_object_or_404(Room, id=room_id)
         return JsonResponse({
             'owner_name': room.owner.user.get_full_name() or room.owner.user.username,
-            'room_title': room.title
+            'room_title': room.title,
+            'location': room.location,
+            'latitude': str(room.latitude) if room.latitude is not None else '',
+            'longitude': str(room.longitude) if room.longitude is not None else '',
         })
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)
